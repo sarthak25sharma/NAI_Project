@@ -1,0 +1,8 @@
+{
+  "job_id": "job_001",
+  "cpu_demand": 2,
+  "creation_time": "2025-10-05T22:45:00Z",
+  "arrival_time": "2025-10-05T22:46:10Z",
+  "completed": false,
+  "completion_time": null
+}
