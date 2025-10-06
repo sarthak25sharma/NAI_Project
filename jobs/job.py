@@ -10,7 +10,7 @@ class Job:
     creation_time: datetime
     completed: bool
     completion_time: datetime | None
-    arrival_time: datetime
+    arrival_time: datetime | None
     stress_command: str | None = None
 
     # Class-level registry to track all jobs by ID
