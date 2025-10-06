@@ -15,12 +15,12 @@ import gym
 from gym import spaces
 
 class JobEnv(gym.Env):
-    def __init__(self, job_queue, window_size=3, noop_penalty=-0.1):
+    def __init__(self, job_queue, window_size=7, noop_penalty=-0.5):
         """
         RL environment for sliding-window job scheduling.
 
-        job_queue: list of Job objects
-        window_size: size of the observation window
+        job_queue: list of Job objects refer to job.py to see format 
+        window_size: size of the observation window (typically would also want to play around with this hyperparameter)
         noop_penalty: small negative reward for No-Op
         """
         super(JobEnv, self).__init__()
@@ -31,7 +31,7 @@ class JobEnv(gym.Env):
 
         # Observation: window_size x 2 ([n, p])
         self.observation_space = spaces.Box(
-            low=0, high=np.inf, shape=(window_size, 2), dtype=np.float32
+            low=-1e5, high=1e5, shape=(window_size, 2), dtype=np.float32
         )
 
         # Action: pick 1 of K jobs or No-Op
@@ -59,22 +59,26 @@ class JobEnv(gym.Env):
         # ----------------------------
         if action == self.window_size:  # No-Op
             reward = self.noop_penalty
-            print(f"[No-Op] at idx {self.current_idx}")
+            self.noop_penalty= self.noop_penalty*1.5  # increase penalty for consecutive no-ops
+            ## make noop penalty even larger so exponential increase if we keep on nooping
+            #print(f"[No-Op] at idx {self.current_idx}")
         else:
             job = self.job_queue[self.current_idx + action]
-            reward = -self._job_cost(job)
-            print(f"[Execute] Job {job.job_id} at idx {self.current_idx + action} with cost { -reward }")
-            # Here you could call your CPU stress function:
+            reward = self._job_cost(job)
+            #print(f"[Execute] Job {job.job_id} at idx {self.current_idx + action} with cost { -reward }")
+            # call CPU stress function:
             # simulate_job(job.n, job.p)
 
-        # Slide window forward
-        self.current_idx += 1
-        if self.current_idx + self.window_size > len(self.job_queue):
-            done = True
+            # Slide window forward
+            self.current_idx += 1
+            if self.current_idx + self.window_size > len(self.job_queue):
+                done = True
+            ## check done = ture logic 
+            self.noop_penalty = -0.5  # reset noop penalty after a real action
 
         obs = self._get_obs() if not done else np.zeros((self.window_size,2),dtype=np.float32)
         return obs, reward, done, {}
-
+    ## MOST IMPORTANT PART TO PLAY AROUND WITH ## 
     def _job_cost(self, job):
         """
         Define reward/cost function. Can include:
@@ -83,6 +87,8 @@ class JobEnv(gym.Env):
         - Queue delay
         """
         return job.n * job.p  # simple placeholder
+    ## ONE final score should be where we add some metircs like avg time (inversely proportional to reward)
+    ## total completion time (proportional to reward)
 
 # ----------------------------
 # Policy Network
@@ -104,7 +110,7 @@ class PolicyNetwork(nn.Module):
 # ----------------------------
 # Training function
 # ----------------------------
-def train_rl(job_queue, window_size=3, num_episodes=1000, gamma=0.99, lr=1e-3):
+def train_rl(job_queue, window_size=7, num_episodes=1000, gamma=0.99, lr=1e-3):
     env = JobEnv(job_queue, window_size)
     policy = PolicyNetwork(window_size)
     optimizer = optim.Adam(policy.parameters(), lr=lr)
@@ -157,14 +163,16 @@ def test_rl(job_queue, policy, window_size=3):
     env = JobEnv(job_queue, window_size)
     obs = env.reset()
     done = False
-
+    score = 0
     while not done:
         obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
         with torch.no_grad():
             probs = policy(obs_tensor)
         action = torch.argmax(probs).item()
         obs, reward, done, _ = env.step(action)
+        score+=reward
         print(f"Selected action: {action}, Reward: {reward}, Obs: {obs}")
+    print(f"Total Score: {score}")
 
 # ----------------------------
 # Example usage
@@ -192,7 +200,7 @@ if __name__ == "__main__":
 
         print(f"[+] Created Job {job_id}: n={n}, p={p}")
         job_queue.append(job)
-    window_size = 3
+    window_size = 7
 
     # Train RL agent
     trained_policy = train_rl(job_queue, window_size, num_episodes=500)

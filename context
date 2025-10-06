@@ -1,0 +1,217 @@
+# Cluster Optimization with Reinforcement Learning — Context Overview
+
+## 🧠 Objective
+We are building a **Reinforcement Learning (RL)**–based **job scheduler** that learns to optimally select jobs from a queue for execution on a compute cluster.  
+The key goal is to **minimize overall latency and waiting time**, **balance resource usage**, and **improve throughput** over time using learned scheduling behavior.
+
+---
+
+## 🧩 System Architecture
+
+### 1. Job Producer
+- Responsible for generating and enqueuing jobs.
+- Each job is characterized by parameters `n` and `p`, which control how much CPU work it will perform when executed 
+- where n and p are simple paramters which will be passed to a functions which will do arithmetic operation of looping till n and doing power of p each  time 
+- The producer can control:
+  - Number of jobs created.
+  - Ranges for `n` and `p`.
+  - Frequency/delay of job generation.
+- Jobs are pushed into a shared queue (e.g., via `multiprocessing.Manager().Queue()` or a message broker like Redis/RabbitMQ).
+
+**Job Structure**
+```python
+job_id: int
+n: int
+p: int
+creation_time: datetime
+completed: bool
+completion_time: datetime | None
+arrival_time: datetime
+stress_command: str | None
+````
+
+---
+
+### 2. Shared Queue
+
+* Acts as a communication bridge between **Producer** and **Scheduler**.
+* Holds pending jobs waiting to be scheduled.
+* Implemented using:
+
+  * `multiprocessing.Manager().Queue()` for single-machine simulation.
+  * Redis/RabbitMQ if you want cross-process or multi-node simulation.
+
+---
+
+### 3. RL-Based Scheduler
+
+#### **Core Idea**
+
+At any point, the scheduler observes a **sliding window of `K` jobs** from the queue.
+It must choose **one job to execute** or **perform a No-Op** (do nothing this step).
+After each action, the window shifts forward (from `1..K` to `2..K+1`).
+
+#### **Observation Space**
+
+* Each job in the window is represented by `[n, p]`.
+* Observation → a `K × 2` matrix.
+
+#### **Action Space**
+
+* Discrete set of actions:
+
+  * `0..K-1`: Pick one of the `K` jobs in the window.
+  * `K`: Perform **No-Op**.
+
+#### **Reward Function**
+
+The reward is how we teach the agent what’s “good” or “bad.”
+
+There are **two types of rewards** used:
+
+| Type                     | Description                                                                    | Example                         |
+| ------------------------ | ------------------------------------------------------------------------------ | ------------------------------- |
+| **Step-level reward**    | Immediate feedback after each action (e.g., job completion cost).              | `r_t = -job.n * job.p`          |
+| **Episode-level reward** | Global feedback once all jobs are processed (e.g., overall system efficiency). | `R_final = - average_wait_time` |
+
+**Combining both:**
+
+* After each episode, compute the global metric (`average_wait_time`).
+* Optionally distribute it back into per-step rewards:
+
+  ```python
+  r'_t = r_t + α * R_final
+  ```
+
+  where `α` controls how much the final metric affects each decision.
+
+---
+
+### 4. Policy Network (Agent)
+
+A lightweight neural network that takes the observation window and outputs probabilities for each action.
+
+**Architecture:**
+
+```text
+Input:  K × 2 observation
+Flatten → Dense(128) → ReLU → Dense(K+1) → Softmax
+```
+
+**Output:** Probability distribution over actions (select job or No-Op).
+
+---
+
+### 5. Training Pipeline
+
+#### **Algorithm**
+
+We use a **Policy Gradient (REINFORCE)** approach:
+
+1. Initialize policy network π(θ)
+2. For each episode:
+
+   * Reset environment (fresh queue)
+   * For each step:
+
+     * Observe window → choose action (sample from π)
+     * Execute action → receive reward
+     * Store (log_prob, reward)
+   * After episode ends:
+
+     * Compute discounted return ( G_t = r_t + γr_{t+1} + ... )
+     * Compute policy gradient loss:
+       [
+       L = -\sum_t \log π(a_t|s_t) * G_t
+       ]
+     * Update network parameters θ ← θ - η∇L
+3. Save trained model (`job_policy.pth`)
+
+---
+
+### 6. Testing
+
+During testing:
+
+* The trained policy is loaded.
+* At each step, the agent selects the **most probable action** (argmax instead of sampling).
+* Rewards and choices are logged for analysis.
+
+---
+
+### 7. No-Op Action
+
+The agent can choose to **do nothing** in a step.
+
+* Action index `K` corresponds to No-Op.
+* This can be useful when delaying scheduling improves resource utilization.
+* Usually penalized slightly (e.g., `reward = -0.1`) to discourage excessive idling.
+
+---
+
+## ⚖️ Reward Design Strategies
+
+| Goal                          | Reward Design                                                         |
+| ----------------------------- | --------------------------------------------------------------------- |
+| Minimize job completion time  | `-job.duration` or `-job.n * job.p`                                   |
+| Reduce queue waiting time     | `-(completion_time - arrival_time)`                                   |
+| Penalize idle time            | Small constant negative reward for No-Op                              |
+| Encourage balanced scheduling | Add penalty for large resource mismatch `(CPU_used - CPU_required)^2` |
+| Reward global efficiency      | Add final episode reward `-average_wait_time`                         |
+
+---
+
+## 🧮 Example Flow
+
+1. Producer generates 100 jobs → pushes to queue.
+2. Scheduler observes first `K=5` jobs.
+3. RL agent selects one job to execute (or No-Op).
+4. Reward = negative cost of the selected job.
+5. Window shifts → repeat until queue empty.
+6. Episode ends → compute `average_wait_time` and apply global reward.
+7. Policy updated based on total return.
+
+---
+
+## 🧱 Key Design Decisions
+
+* **Separation of Concerns:** Producer and Scheduler can run as separate processes connected via a queue or message broker.
+* **Sliding Window Mechanism:** Keeps the action space small while allowing continuous scheduling.
+* **Reward Shaping:** Uses both local and global signals for better convergence.
+* **No-Op Flexibility:** Lets the agent learn when *not* scheduling is optimal.
+* **Generalizable Inputs:** Using `[n, p]` allows extension to other job parameters later.
+
+---
+
+## 🧰 Future Extensions
+
+* Integrate a **real execution layer** that actually runs jobs using `stress-ng` or Docker.
+* Extend observation space to include **CPU load, memory usage, waiting time**.
+* Implement **multi-agent RL** where multiple schedulers coordinate.
+* Add **curriculum learning**: start simple, increase queue size and variability gradually.
+* Switch to **PPO** or **A2C** for better stability on larger state spaces.
+
+---
+
+## 📦 Current Files
+
+| File                          | Description                                                    |
+| ----------------------------- | -------------------------------------------------------------- |
+| `producer.py`                 | Generates and enqueues jobs into the shared queue.             |
+| `scheduler.py`                | Pulls jobs from the queue and runs the RL environment.         |
+| `rl_job_scheduler_updated.py` | Full environment, policy, and training logic.                  |
+| `context.md`                  | This documentation file describing architecture and rationale. |
+
+---
+
+## 🚀 Summary
+
+This project models **job scheduling as a reinforcement learning problem** where:
+
+* The environment simulates a dynamic job queue.
+* The agent learns scheduling policies from experience.
+* Both **local** (step-wise) and **global** (episode-wise) feedback shape the learned behavior.
+
+The system’s design is modular, realistic, and extensible — making it a strong foundation for research or production-scale scheduling simulation.
+
+```
