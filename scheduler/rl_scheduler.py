@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import random
-
+from datetime import datetime, timezone
 # Assume your existing Job class is imported:
 from jobs.job import Job
 
@@ -59,9 +59,11 @@ class JobEnv(gym.Env):
         # ----------------------------
         if action == self.window_size:  # No-Op
             reward = self.noop_penalty
+            print(f"[No-Op] at idx {self.current_idx}")
         else:
             job = self.job_queue[self.current_idx + action]
             reward = -self._job_cost(job)
+            print(f"[Execute] Job {job.job_id} at idx {self.current_idx + action} with cost { -reward }")
             # Here you could call your CPU stress function:
             # simulate_job(job.n, job.p)
 
@@ -169,7 +171,27 @@ def test_rl(job_queue, policy, window_size=3):
 # ----------------------------
 if __name__ == "__main__":
     # Example job queue (replace with your actual jobs)
-    job_queue = [i for i in range(15)]
+    job_queue = []
+    for job_id in range(1, 100 + 1):
+        n = random.randint(1,1000)
+        p = random.randint(1,10)
+
+        creation_time = datetime.now(timezone.utc)
+        arrival_time = -1  # will be measured at cpu simulaotr 
+        stress_command = "stress-ng --cpu {n} --timeout {p}s"
+        job = Job(
+                job_id=job_id,
+                n=n,
+                p=p,
+                creation_time=creation_time,
+                completed=False,
+                completion_time=None,
+                arrival_time=arrival_time,
+                stress_command=stress_command
+        )
+
+        print(f"[+] Created Job {job_id}: n={n}, p={p}")
+        job_queue.append(job)
     window_size = 3
 
     # Train RL agent
