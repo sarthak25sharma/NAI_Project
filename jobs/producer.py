@@ -2,7 +2,7 @@ import random
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from job import Job  # import your Job class
+from jobs.job import Job  # import your Job class
 
 class JobProducer:
     def __init__(self, n_range=(1, 4), p_range=(5, 30), max_jobs=10):
