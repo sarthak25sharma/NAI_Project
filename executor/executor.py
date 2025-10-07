@@ -1,20 +1,12 @@
-import argparse
 import csv
 import json
 import os
-import shlex
 import shutil
 import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-# Ensure project root is on sys.path when running directly
-import sys
-from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parents[1]))
-
 from jobs.job import Job
-from jobs.producer import JobProducer
 
 
 def ensure_directory(path: str) -> None:
@@ -129,29 +121,6 @@ def write_csv(metrics_list: List[Dict[str, object]], output_path: str) -> None:
             writer.writerow(record)
 
 
-def fifo_order(jobs: List[Job]) -> List[Job]:
-    # FIFO by creation_time, fallback to job_id for stability
-    return sorted(
-        jobs,
-        key=lambda j: ((j.creation_time or datetime.min.replace(tzinfo=timezone.utc)), j.job_id),
-    )
-
-
-def collect_registry_jobs() -> List[Job]:
-    return list(Job.registry.values())
-
-
-def generate_jobs_if_requested(args: argparse.Namespace) -> None:
-    if args.generate_jobs <= 0:
-        return
-    producer = JobProducer(
-        n_range=(args.n_min, args.n_max),
-        p_range=(args.p_min, args.p_max),
-        max_jobs=args.generate_jobs,
-    )
-    producer.produce_jobs()
-
-
 def execute_ordered_jobs(ordered_jobs: List[Job], output_dir: str, simulate: bool) -> None:
     ensure_directory(output_dir)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -172,54 +141,5 @@ def execute_ordered_jobs(ordered_jobs: List[Job], output_dir: str, simulate: boo
     write_jsonl(all_metrics, jsonl_path)
     write_csv(all_metrics, csv_path)
     print(f"Wrote metrics: {jsonl_path}\nWrote metrics: {csv_path}")
-
-
-def run_fifo_executor(args: argparse.Namespace) -> None:
-    generate_jobs_if_requested(args)
-
-    registry_jobs = collect_registry_jobs()
-    if not registry_jobs:
-        print("No jobs available to execute. Provide --generate-jobs or create jobs beforehand.")
-        return
-
-    ordered_jobs = fifo_order(registry_jobs)
-    execute_ordered_jobs(ordered_jobs, output_dir=args.output_dir, simulate=args.simulate)
-
-
-def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="FIFO executor for Jobs with metrics output")
-    parser.add_argument(
-        "--generate-jobs",
-        type=int,
-        default=0,
-        help="If > 0, generate this many jobs before executing",
-    )
-    parser.add_argument("--n-min", type=int, default=1, help="Minimum CPUs for generated jobs")
-    parser.add_argument("--n-max", type=int, default=4, help="Maximum CPUs for generated jobs")
-    parser.add_argument("--p-min", type=int, default=1, help="Minimum seconds for generated jobs")
-    parser.add_argument("--p-max", type=int, default=10, help="Maximum seconds for generated jobs")
-
-    parser.add_argument(
-        "--simulate",
-        action="store_true",
-        help="Simulate execution instead of running stress-ng",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        default="artifacts",
-        help="Directory to write metrics files",
-    )
-    return parser
-
-
-def main() -> None:
-    parser = build_arg_parser()
-    args = parser.parse_args()
-    run_fifo_executor(args)
-
-
-if __name__ == "__main__":
-    main()
 
 

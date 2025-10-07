@@ -14,6 +14,7 @@ import gymnasium as gym
 from gymnasium import spaces
 
 from jobs.job import Job
+from executor.executor import execute_job  # integrate real job execution
 
 # Setup logging
 logging.basicConfig(
@@ -34,13 +35,14 @@ class JobEnv(gym.Env):
     Actions: 0..window_size-1 pick job in window, window_size = No-Op
     """
 
-    def __init__(self, job_queue, window_size=7, k1=0.5, k2=0.5, writer=None):
+    def __init__(self, job_queue, window_size=7, k1=0.5, k2=0.5, writer=None, simulate=True):
         super(JobEnv, self).__init__()
         self.original_job_queue = job_queue  # Keep original reference
         self.job_queue = []
         self.window_size = window_size
         self.writer = writer
         self.logger = logger
+        self.simulate = simulate
 
         self.current_idx = 0
         self.k1 = k1
@@ -62,9 +64,11 @@ class JobEnv(gym.Env):
         # Reset all jobs
         for job in self.job_queue:
             job.completed = False
+            job.creation_time = datetime.now(timezone.utc)
             job.completion_time = None
         
         self.completed_jobs = []
+        self.collected_metrics = []  # metrics dicts from executor for reward calc
         self.current_step = 0
         self.noop_penalty = self.base_noop_penalty
         self.current_idx = 0
@@ -111,19 +115,9 @@ class JobEnv(gym.Env):
         return mask
 
     def _execute_job(self, job):
-        """
-        PLACEHOLDER: Execute a job.
-        This will be integrated with actual executor later.
-        For now, just marks the job as ready for execution.
-        """
-        ## -------------------- ## 
-        ## Executor placeholder ## 
-        ## -------------------- ##
-        # TODO: Integrate with actual executor
-        # Example: self.executor.execute(job)
-        
-        # For now, just a placeholder that does nothing
-        pass
+        """Execute job via executor and collect metrics."""
+        metrics = execute_job(job, simulate=self.simulate)
+        self.collected_metrics.append(metrics)
 
     def step(self, action):
         """Execute action and return next observation, reward, done, info"""
@@ -158,15 +152,15 @@ class JobEnv(gym.Env):
                 reward = -10.0
                 self.logger.error(f"Step {self.current_step}: Tried to execute completed job {job.job_id}")
             else:
-                # Execute the job (placeholder for now)
+                # Execute the job and collect metrics
                 self._execute_job(job)
                 
                 # Mark as completed
                 job.completed = True
-                job.completion_time = None
-                # TODO set actual completion time when integrated
+                # completion_time is already set by executor.mark_completed()
                 self.completed_jobs.append(job)
                 
+                # Basic positive step reward; will be complemented by episode reward
                 reward = self.rstep
                 self.logger.info(f"Step {self.current_step}: Executed job {job.job_id} "
                                f"(n={job.n}, p={job.p})")
@@ -192,24 +186,22 @@ class JobEnv(gym.Env):
 
     def compute_episode_reward(self):
         """
-        Compute episode-level reward:
+        Compute episode-level reward from real metrics:
         R_ep = k1 * (N / total_completion_time) + k2 * (N / avg_wait_time)
-        
-        NOTE: total_completion_time and avg_wait are PLACEHOLDERS.
-        These will be pulled from docker later.
         """
         N = len(self.completed_jobs)
         if N == 0:
             self.logger.warning("Episode ended with 0 completed jobs")
             return 0.0
 
-        ## -------------------------------------------- ##
-        ## PLACEHOLDER: Replace with actual metrics     ##
-        ## -------------------------------------------- ##
-        # TODO: Pull these from Docker/external monitoring
-        total_completion_time = 100  # Placeholder constant
-        avg_wait = 100  # Placeholder constant
-        ## -------------------------------------------- ##
+        # Aggregate metrics from executor
+        durations = [m.get("duration_s", 0.0) for m in self.collected_metrics]
+        waits = [m.get("queue_wait_s", 0.0) for m in self.collected_metrics]
+        total_completion_time = float(sum(durations)) if durations else 0.0
+        avg_wait = float(mean(waits)) if waits else 0.0
+        # Avoid division by zero; if zero time, give small denom
+        total_completion_time = max(total_completion_time, 1e-6)
+        avg_wait = max(avg_wait, 1e-6)
 
         # Compute episode reward
         R_ep = self.k1 * (N / max(total_completion_time, 0.1)) + \
@@ -268,11 +260,12 @@ def train_rl(
     num_episodes=1000,
     gamma=0.99,
     lr=1e-3,
-    tb_logdir="runs/rl_job_scheduler"
+    tb_logdir="runs/rl_job_scheduler",
+    simulate=True
 ):
     """Train the RL agent"""
     writer = SummaryWriter(log_dir=tb_logdir)
-    env = JobEnv(job_queue, window_size, writer=writer)
+    env = JobEnv(job_queue, window_size, writer=writer, simulate=simulate)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
